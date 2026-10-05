@@ -1,3 +1,4 @@
+from src.sentence_builder import SentenceBuilder
 """
 main.py — Phase 2 Real-Time Dual-Mode Sign Language Translator
 ===============================================================
@@ -26,16 +27,16 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 # Import pipeline modules
-from capture import open_camera, compute_fps, draw_fps
-from landmarks import process_frame_for_landmarks, draw_landmarks_on_frame
-from preprocessing import prepare_input_vector
-from data_logger import save_landmark_sample, SaveFlash, DEFAULT_CSV_PATH
-from inference.stability import PredictionStabilizer
-from inference.sequence_buffer import SequenceBuffer
-from models.static_model import StaticClassifierV2
-from models.dynamic_model import DynamicClassifier
-from dummy_classifier import predict as dummy_predict
-from labels import load_class_labels
+from src.capture import open_camera, compute_fps, draw_fps
+from src.landmarks import process_frame_for_landmarks, draw_landmarks_on_frame
+from src.preprocessing import prepare_input_vector
+from src.data_logger import save_landmark_sample, SaveFlash, DEFAULT_CSV_PATH
+from src.inference.stability import PredictionStabilizer
+from src.inference.sequence_buffer import SequenceBuffer
+from src.models.static_model import StaticClassifierV2
+from src.models.dynamic_model import DynamicClassifier
+from src.dummy_classifier import predict as dummy_predict
+from src.labels import load_class_labels
 
 # Paths
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -165,6 +166,13 @@ def run_pipeline(csv_path: str = DEFAULT_CSV_PATH, camera_index: int = 0) -> Non
         return
 
     flash = SaveFlash()
+    sentence_builder = SentenceBuilder(idle_timeout=2.0)
+    current_translation = ""
+
+    def update_ui_with_translation(natural_english_sentence):
+        nonlocal current_translation
+        current_translation = natural_english_sentence
+        print(f"\n[GEMINI TRANSLATION]: {natural_english_sentence}\n")
     prev_time = time.time()
     # Frame budget: if processing exceeds this, skip next frame's heavy pipeline
     _FRAME_BUDGET_MS = 40.0  # ~25fps threshold
@@ -229,7 +237,12 @@ def run_pipeline(csv_path: str = DEFAULT_CSV_PATH, camera_index: int = 0) -> Non
         # Track C1: Temporal Smoothing over predictions
         stabilized_label = stabilizer.process_prediction(predicted_label, confidence)
 
-
+        if stabilized_label:
+            sentence_builder.add_char(stabilized_label)
+        sentence_builder.check_idle_and_translate(on_translation_done=update_ui_with_translation)
+        
+        # Get live typing text
+        live_raw_text = sentence_builder.get_display_text()
         # Render overlays
         fps, prev_time = compute_fps(prev_time)
         draw_fps(frame, fps)
@@ -240,6 +253,8 @@ def run_pipeline(csv_path: str = DEFAULT_CSV_PATH, camera_index: int = 0) -> Non
         draw_prediction_badge(frame, active_mode, stabilized_label, confidence)
         draw_status_bar(frame, active_mode, active_static_label, active_dynamic_word)
         flash.draw(frame)
+        cv2.putText(frame, f"Typing: {live_raw_text}", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"AI: {current_translation}", (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 100), 2, cv2.LINE_AA)
 
         cv2.imshow("Sign Language Translator — Dual Mode", frame)
 

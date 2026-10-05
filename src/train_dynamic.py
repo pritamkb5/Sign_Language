@@ -23,14 +23,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 from collections import Counter
 
-from models.dynamic_model import DynamicGRU
+from models.dynamic_model import DynamicGRU, normalize_trajectory
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ── Temporal Resampling ──────────────────────────────────────────────────────
 
-def resample_sequence(sequence: np.ndarray, target_length: int = 30) -> np.ndarray:
+def resample_sequence(sequence: np.ndarray, target_length: int = 16) -> np.ndarray:
     """
     Resample a variable-length sequence to a fixed target_length using
     linear interpolation along the time axis.
@@ -69,7 +69,7 @@ def resample_sequence(sequence: np.ndarray, target_length: int = 30) -> np.ndarr
 
 # ── Data Augmentation ────────────────────────────────────────────────────────
 
-def augment_sequence(sequence: np.ndarray, target_length: int = 30) -> np.ndarray:
+def augment_sequence(sequence: np.ndarray, target_length: int = 16) -> np.ndarray:
     """
     Apply temporal and spatial augmentation to a raw variable-length sequence,
     then resample to target_length.
@@ -127,7 +127,7 @@ def augment_sequence(sequence: np.ndarray, target_length: int = 30) -> np.ndarra
 
 class DynamicSequenceDataset(Dataset):
     """PyTorch dataset for fixed-length resampled landmark sequences."""
-    def __init__(self, sequences: list[np.ndarray], labels: list[int], augment: bool = False, target_length: int = 30):
+    def __init__(self, sequences: list[np.ndarray], labels: list[int], augment: bool = False, target_length: int = 16):
         self.raw_sequences = sequences  # variable-length raw arrays
         self.labels = labels
         self.augment = augment
@@ -144,26 +144,32 @@ class DynamicSequenceDataset(Dataset):
             seq = augment_sequence(raw_seq, self.target_length)
         else:
             seq = resample_sequence(raw_seq, self.target_length)
+            
+        # Apply normalization relative to palm center for robust separation
+        seq = normalize_trajectory(seq)
 
         return torch.tensor(seq, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
 
 
 # ── Data Loading ─────────────────────────────────────────────────────────────
 
-def load_dynamic_dataset(data_dir: str, num_features: int = 126):
+def load_dynamic_dataset(data_dirs: list[str], num_features: int = 126):
     """
-    Loads all .npy sequence files from data_dir.
+    Loads all .npy sequence files from a list of data_dirs.
     Returns raw variable-length sequences (NOT padded/resampled yet).
     """
-    dir_path = Path(data_dir)
-    if not dir_path.exists():
-        alt_path = _PROJECT_ROOT / "src" / "data" / "dynamic"
-        if alt_path.exists():
-            dir_path = alt_path
+    npy_files = []
+    for d in data_dirs:
+        dir_path = Path(d)
+        if dir_path.exists():
+            npy_files.extend(list(dir_path.glob("*.npy")))
+        else:
+            alt_path = _PROJECT_ROOT / "src" / "data" / "dynamic"
+            if alt_path.exists() and alt_path.name == dir_path.name:
+                npy_files.extend(list(alt_path.glob("*.npy")))
 
-    npy_files = list(dir_path.glob("*.npy"))
     if not npy_files:
-        raise FileNotFoundError(f"[ERROR] No .npy sequence files found in {dir_path.resolve()}")
+        raise FileNotFoundError(f"[ERROR] No .npy sequence files found in {data_dirs}")
 
     sequences = []
     labels_raw = []
@@ -226,11 +232,11 @@ def compute_class_weights(labels: list[int], num_classes: int) -> torch.Tensor:
 
 # ── Training ─────────────────────────────────────────────────────────────────
 
-def train_dynamic_model(data_dir: str, model_save_path: str, labels_save_path: str,
+def train_dynamic_model(data_dirs: list[str], model_save_path: str, labels_save_path: str,
                         epochs: int, batch_size: int, learning_rate: float) -> tuple[float, float]:
     """Trains DynamicGRU model on sequence dataset with resampling + augmentation."""
-    print(f"[INFO] Loading dynamic sequence dataset from: {data_dir}")
-    sequences, labels, class_labels = load_dynamic_dataset(data_dir)
+    print(f"[INFO] Loading dynamic sequence dataset from: {data_dirs}")
+    sequences, labels, class_labels = load_dynamic_dataset(data_dirs)
     num_classes = len(class_labels)
 
     # Print data statistics
@@ -262,20 +268,20 @@ def train_dynamic_model(data_dir: str, model_save_path: str, labels_save_path: s
 
     # Create datasets — training set uses augmentation, val/test do not
     train_loader = DataLoader(
-        DynamicSequenceDataset(X_train, y_train, augment=True, target_length=30),
+        DynamicSequenceDataset(X_train, y_train, augment=True, target_length=16),
         batch_size=batch_size, shuffle=True
     )
     val_loader = DataLoader(
-        DynamicSequenceDataset(X_val, y_val, augment=False, target_length=30),
+        DynamicSequenceDataset(X_val, y_val, augment=False, target_length=16),
         batch_size=batch_size, shuffle=False
     )
     test_loader = DataLoader(
-        DynamicSequenceDataset(X_test, y_test, augment=False, target_length=30),
+        DynamicSequenceDataset(X_test, y_test, augment=False, target_length=16),
         batch_size=batch_size, shuffle=False
     )
 
     # Model initialization
-    model = DynamicGRU(input_dim=126, hidden_dim=128, num_layers=2, num_classes=num_classes, dropout_prob=0.3)
+    model = DynamicGRU(input_dim=252, hidden_dim=128, num_layers=2, num_classes=num_classes, dropout_prob=0.3)
     
     # Class-weighted loss to prevent majority-class collapse
     class_weights = compute_class_weights(y_train, num_classes)
@@ -351,7 +357,7 @@ def train_dynamic_model(data_dir: str, model_save_path: str, labels_save_path: s
     print(f"[INFO] Saved dynamic class labels list to: {labels_save_path}")
 
     # Final Evaluation on Test Set & Error Analysis
-    best_model = DynamicGRU(input_dim=126, hidden_dim=128, num_layers=2, num_classes=num_classes)
+    best_model = DynamicGRU(input_dim=252, hidden_dim=128, num_layers=2, num_classes=num_classes)
     best_model.load_state_dict(torch.load(model_save_path))
     best_model.eval()
 
@@ -419,8 +425,13 @@ if __name__ == "__main__":
             print(f"[ERROR] Offline augmentation failed: {e}")
             sys.exit(1)
 
+    data_dirs = [
+        args.data_dir,
+        str(_PROJECT_ROOT / "data" / "dynamic_real")
+    ]
+
     train_dynamic_model(
-        data_dir=args.data_dir,
+        data_dirs=data_dirs,
         model_save_path=args.model_out,
         labels_save_path=args.labels_out,
         epochs=args.epochs,

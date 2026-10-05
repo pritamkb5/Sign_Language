@@ -1,123 +1,151 @@
 import time
+import queue
+import threading
+import re
+from src.inference.api_translator import APISignTranslator
 
 class SentenceBuilder:
-    def __init__(self, hold_duration_frames: int = 15, confidence_threshold: float = 0.6,
-                 dynamic_confidence_threshold: float = 0.35):
-        """
-        Manages the accumulated sentence text with a hold-to-confirm mechanism.
+    def __init__(self, idle_timeout: float = 2.0):
+        self.idle_timeout = idle_timeout
+        self.raw_words = []
+        self.current_word = []
+        self.last_char = None
+        self.last_char_time = 0.0
+        self.last_hand_seen = time.time()
         
-        Args:
-            hold_duration_frames: Consecutive frames a prediction must be held to commit (STATIC mode only).
-            confidence_threshold: Minimum confidence to consider a STATIC prediction valid for holding.
-            dynamic_confidence_threshold: Minimum confidence for DYNAMIC word commits. This is
-                intentionally lower than the static threshold and matches the stabilizer's own
-                dynamic threshold — dynamic gestures are inherently less confident single-shot
-                predictions, not continuously-held poses, so gating them at the same strict
-                static threshold silently blocks otherwise-valid word commits.
-        """
-        self.buffer = ""
-        self.hold_duration_frames = hold_duration_frames
-        self.confidence_threshold = confidence_threshold
-        self.dynamic_confidence_threshold = dynamic_confidence_threshold
+        self.final_translated_sentence = ""
+        self.is_translating = False
         
-        self.current_held_prediction = None
-        self.held_frames_count = 0
+        # Initialize the API translator
+        self.translator = APISignTranslator()
         
-        # Reserved gesture commands (using existing dynamic labels as triggers)
-        # Documented choice:
-        # "more" -> Space
-        # "no" -> Delete/Backspace
-        # "stop" -> Clear buffer
-        self.cmd_space = "more"
-        self.cmd_delete = "no"
-        self.cmd_clear = "stop"
+        self._translation_queue = queue.Queue()
+        self._worker_thread = threading.Thread(target=self._translation_worker, daemon=True)
+        self._worker_thread.start()
         
-        self.last_committed_time = 0
-        self.cooldown_seconds = 1.5 # cooldown between committing the same word repeatedly
+        self.on_update_callback = None
 
-    def process_prediction(self, mode: str, label: str, confidence: float) -> str:
-        """
-        Processes a single smoothed prediction. If the prediction is held long enough
-        above the confidence threshold, it is committed to the sentence buffer.
-
-        Note: STATIC letters are continuously-held poses, so they require being
-        seen for several consecutive frames before committing (hold_duration_frames).
-        DYNAMIC words are one-shot: the classifier only fires briefly, right when
-        the gesture sequence buffer completes, and then resets. Requiring the same
-        multi-frame hold for DYNAMIC mode means the word is almost always gone
-        before it can accumulate enough held frames, so it silently never commits.
-        DYNAMIC predictions are therefore committed as soon as they appear (still
-        subject to the cooldown below, to avoid the same word firing twice in a row).
-
-        Returns:
-            The newly committed word/char, or None if nothing was committed this frame.
-        """
-        committed_text = None
-        required_hold_frames = 1 if mode == "DYNAMIC" else self.hold_duration_frames
-        required_confidence = self.dynamic_confidence_threshold if mode == "DYNAMIC" else self.confidence_threshold
-
-        if label and confidence >= required_confidence:
-            if label == self.current_held_prediction:
-                self.held_frames_count += 1
-            else:
-                self.current_held_prediction = label
-                self.held_frames_count = 1
-
-            if self.held_frames_count >= required_hold_frames:
-                # Check cooldown to prevent rapid-fire repeating
-                if time.time() - self.last_committed_time > self.cooldown_seconds:
-                    committed_text = self._commit_prediction(mode, label)
-                    self.last_committed_time = time.time()
-                    self.held_frames_count = 0 # reset after commit
-        else:
-            self.current_held_prediction = None
-            self.held_frames_count = 0
-
-        return committed_text
-
-    def _commit_prediction(self, mode: str, label: str) -> str:
-        # Handle commands first
-        if label == self.cmd_space:
-            self.buffer += " "
-            return " "
-        elif label == self.cmd_delete:
-            if len(self.buffer) > 0:
-                # If trailing space, remove it first
-                if self.buffer.endswith(" "):
-                    self.buffer = self.buffer[:-1]
+    def _translation_worker(self):
+        while True:
+            text = self._translation_queue.get()
+            if text is None:
+                break
                 
-                # Delete last word if dynamic, or last char if static
-                if mode == "DYNAMIC":
-                    parts = self.buffer.rstrip().split(" ")
-                    self.buffer = " ".join(parts[:-1]) + (" " if len(parts) > 1 else "")
-                else:
-                    self.buffer = self.buffer[:-1]
-            return "[DELETE]"
-        elif label == self.cmd_clear:
-            self.buffer = ""
-            return "[CLEAR]"
+            clean_text = self._filter_gibberish(text)
+            if not clean_text.strip():
+                self.final_translated_sentence = ""
+            else:
+                self.is_translating = True
+                translated = self.translator.translate(clean_text)
+                self.final_translated_sentence = translated
+                self.is_translating = False
+                
+            if self.on_update_callback:
+                self.on_update_callback()
+                
+            self._translation_queue.task_done()
+
+    def _filter_gibberish(self, text: str) -> str:
+        """Strips out non-words, rapid flickering characters, and unintended artifacts."""
+        words = text.split()
+        clean_words = []
+        for word in words:
+            # Keep known valid words
+            if word.lower() in ["hello", "thanks", "yes", "no", "please", "help", "sorry", "name", "more", "stop", "love", "want", "eat", "drink", "friend"]:
+                clean_words.append(word)
+                continue
+                
+            # Filter rapid flickering: consecutive identical letters (e.g. "HHHELLO" -> "HELLO")
+            word = re.sub(r'(.)\1{2,}', r'\1\1', word) 
             
-        # Handle normal appending
-        if mode == "STATIC":
-            self.buffer += label
-        else: # DYNAMIC
-            # Automatically add space before new word if buffer isn't empty and doesn't end with space
-            if self.buffer and not self.buffer.endswith(" "):
-                self.buffer += " "
-            self.buffer += label
-            self.buffer += " "
-            
-        return label
+            # Filter pure consonant gibberish of length >= 3
+            if len(word) >= 3 and not re.search(r'[AEIOUYaeiouy]', word):
+                continue
+                
+            # Filter standalone consonants (except I, A, O)
+            if len(word) == 1 and word.upper() not in ["I", "A", "O"]:
+                continue
+                
+            if len(word) > 0:
+                clean_words.append(word)
+                
+        return " ".join(clean_words)
 
-    def manual_space(self):
-        self.buffer += " "
+    def trigger_translation(self):
+        """Pushes current state to the background worker for real-time translation."""
+        current = "".join(self.current_word)
+        buffered = " ".join(self.raw_words)
+        full_text = f"{buffered} {current}".strip()
+        
+        # Empty stale tasks from queue
+        while not self._translation_queue.empty():
+            try:
+                self._translation_queue.get_nowait()
+                self._translation_queue.task_done()
+            except queue.Empty:
+                break
+                
+        if full_text:
+            self._translation_queue.put(full_text)
+        else:
+            self.final_translated_sentence = ""
+            if self.on_update_callback:
+                self.on_update_callback()
 
-    def manual_delete(self):
-        if len(self.buffer) > 0:
-            self.buffer = self.buffer[:-1]
+    def add_char(self, char: str):
+        """Debounces and adds a confirmed letter from the live camera feed."""
+        now = time.time()
+        self.last_hand_seen = now
 
-    def manual_clear(self):
-        self.buffer = ""
+        # Prevent duplicate insertions of the same letter (edge-triggered)
+        if char == self.last_char:
+            return
+        
+        self.current_word.append(char)
+        self.last_char = char
+        if self.on_update_callback:
+            self.on_update_callback()
 
-    def get_sentence(self):
-        return self.buffer.strip()
+    def reset_last_char(self):
+        """Clears the last seen character so it can be triggered again after a drop."""
+        self.last_char = None
+
+    def delete(self):
+        """Removes the last character or word."""
+        if self.current_word:
+            self.current_word.pop()
+        elif self.raw_words:
+            self.raw_words.pop()
+        if self.on_update_callback:
+            self.on_update_callback()
+
+    def clear(self):
+        """Clears all states."""
+        self.raw_words = []
+        self.current_word = []
+        self.last_char = None
+        self.final_translated_sentence = ""
+        # Cancel any pending translations
+        while not self._translation_queue.empty():
+            try:
+                self._translation_queue.get_nowait()
+                self._translation_queue.task_done()
+            except queue.Empty:
+                break
+        if self.on_update_callback:
+            self.on_update_callback()
+
+    def add_space(self):
+        """Commits the currently accumulated characters into a word."""
+        if self.current_word:
+            word = "".join(self.current_word)
+            self.raw_words.append(word)
+            self.current_word = []
+        if self.on_update_callback:
+            self.on_update_callback()
+
+    def get_display_text(self) -> str:
+        """Returns the raw text to show on screen."""
+        current = "".join(self.current_word)
+        buffered = " ".join(self.raw_words)
+        return f"{buffered} {current}".strip()

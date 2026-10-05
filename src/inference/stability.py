@@ -108,7 +108,11 @@ class PredictionStabilizer:
         if non_empty:
             counts = Counter(non_empty)
             most_common, count = counts.most_common(1)[0]
-            if count >= max(1, self.k_threshold // 2):
+            
+            # Enforce strict hold: require 80% consistency for long windows (STATIC) to avoid garbage flickering
+            required_count = max(1, int(self.k_threshold * 0.8)) if self.k_threshold > 2 else max(1, self.k_threshold // 2)
+            
+            if count >= required_count:
                 self.current_confirmed_prediction = most_common
 
         return self.current_confirmed_prediction

@@ -54,7 +54,7 @@ class SequenceBuffer:
     (motion drops below threshold for several frames), captures the segment,
     and resamples it to a fixed length for classification.
     """
-    def __init__(self, sequence_length: int = 30, feature_dim: int = 126):
+    def __init__(self, sequence_length: int = 16, feature_dim: int = 126):
         self.sequence_length = sequence_length
         self.feature_dim = feature_dim
         self._lock = threading.Lock()
@@ -68,12 +68,12 @@ class SequenceBuffer:
 
         # Thresholds (tuned for wrist-normalized landmark coordinates)
         # Phase 4: Lowered thresholds to reduce inter-gesture lag by ~40%
-        self._motion_start_threshold = 0.006   # per-feature mean displacement to start (was 0.008)
-        self._motion_stop_threshold = 0.003    # per-feature mean displacement to stop (was 0.004)
-        self._min_idle_to_stop = 4             # consecutive idle frames to declare gesture end (was 5)
-        self._min_gesture_frames = 4           # minimum frames for a valid gesture (was 5)
-        self._max_gesture_frames = 60          # maximum frames before force-stopping
-        self._cooldown_frames = 4              # frames to wait after gesture ends (was 8)
+        self._motion_start_threshold = 0.001   # per-feature mean displacement to start (was 0.006)
+        self._motion_stop_threshold = 0.0005   # per-feature mean displacement to stop (was 0.003)
+        self._min_idle_to_stop = 4             # consecutive idle frames to declare gesture end
+        self._min_gesture_frames = 4           # minimum frames for a valid gesture
+        self._max_gesture_frames = 16          # maximum frames before force-stopping
+        self._cooldown_frames = 0              # frames to wait after gesture ends
         self._cooldown_counter = 0
 
         # Output: the latest ready-to-classify resampled sequence
@@ -94,8 +94,13 @@ class SequenceBuffer:
 
             # Sanitize input
             if not flat_features or len(flat_features) == 0:
-                vec = np.zeros(self.feature_dim, dtype=np.float32)
+                is_empty = True
+                if self._prev_frame is not None:
+                    vec = self._prev_frame.copy()
+                else:
+                    vec = np.zeros(self.feature_dim, dtype=np.float32)
             else:
+                is_empty = False
                 vec = np.array(flat_features, dtype=np.float32)
                 if len(vec) < self.feature_dim:
                     padded = np.zeros(self.feature_dim, dtype=np.float32)
@@ -116,6 +121,7 @@ class SequenceBuffer:
             if self._prev_frame is not None:
                 diff = np.abs(vec - self._prev_frame)
                 motion = float(np.mean(diff))
+            
             self._prev_frame = vec.copy()
 
             # Cooldown after a gesture was just completed
@@ -133,6 +139,7 @@ class SequenceBuffer:
             else:
                 # Currently recording a gesture
                 self._gesture_frames.append(vec.copy())
+                print(f"[DEBUG] Dynamic Buffer: {len(self._gesture_frames)}/{self._max_gesture_frames} frames | Hand detected: {not is_empty}")
 
                 if motion < self._motion_stop_threshold:
                     self._idle_count += 1

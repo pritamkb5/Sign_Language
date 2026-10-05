@@ -186,52 +186,38 @@ def find_working_camera_index(preferred_index: int = 0) -> tuple[int, int, float
 
 
 def open_camera(camera_index: int = 0, allow_mock: bool = True) -> ThreadedCamera | MockVideoCapture:
-    """
-    Open physical camera on camera_index (or auto-detect bright physical camera if camera_index is black).
-    If no optical feed is found, falls back to MockVideoCapture.
-    """
-    is_windows = platform.system() == "Windows"
-    backend = cv2.CAP_DSHOW if is_windows else cv2.CAP_ANY
+    # Robust Index Scanning
+    indices_to_try = [camera_index]
+    for i in [0, 1, 2]:
+        if i not in indices_to_try:
+            indices_to_try.append(i)
 
-    # 1. Try opening requested index with DirectShow
-    try:
-        cap = cv2.VideoCapture(camera_index, backend)
+    for idx in indices_to_try:
+        if idx < 0:
+            continue
+            
+        # Use DirectShow, which we know connects to your camera
+        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        
         if cap.isOpened():
+            # --- THE FIX: Force the MJPG codec to eliminate the rainbow static ---
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+            # ---------------------------------------------------------------------
+            
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-            ret, frame = cap.read()
-            if ret and frame is not None and frame.size > 0:
-                mean_val = float(np.mean(frame))
-                if mean_val > 5.0:
-                    print(f"[SUCCESS] Opened physical camera index {camera_index} (Mean brightness: {mean_val:.2f})!")
-                    return ThreadedCamera(cap)
-            cap.release()
-    except Exception:
-        pass
-
-    # 2. If requested index returned black, auto-scan all connected physical cameras
-    best_idx, best_backend, best_mean = find_working_camera_index(preferred_index=camera_index)
-
-    if best_mean > 5.0:
-        try:
-            cap = cv2.VideoCapture(best_idx, best_backend)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                print(f"[SUCCESS] Auto-selected active camera Index {best_idx} (Pixel Mean: {best_mean:.2f})!")
-                return ThreadedCamera(cap)
-        except Exception:
-            pass
-
-    print("[WARNING] No active optical feed detected on any physical camera.")
+            
+            # Read 10 throwaway frames to let the hardware sensor wake up
+            for _ in range(10):
+                cap.read()
+                
+            print(f"[SUCCESS] Physical camera opened on index {idx}!")
+            return ThreadedCamera(cap)
 
     if allow_mock:
         print("[INFO] Falling back to Synthetic Camera Mode.")
         return MockVideoCapture(width=640, height=480, fps=30)
-
+        
     raise RuntimeError("[ERROR] No working physical camera device found.")
 
 

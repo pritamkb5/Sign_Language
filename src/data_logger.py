@@ -27,10 +27,10 @@ import numpy as np
 # Import our capture and preprocessing helpers
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from capture import open_camera, compute_fps, draw_fps
-from landmarks import get_hand_landmarks, draw_landmarks_on_frame, process_frame_for_landmarks
-from preprocessing import prepare_input_vector
-from labels import load_class_labels, load_dynamic_labels
+from src.capture import open_camera, compute_fps, draw_fps
+from src.landmarks import get_hand_landmarks, draw_landmarks_on_frame, process_frame_for_landmarks
+from src.preprocessing import prepare_input_vector
+from src.labels import load_class_labels, load_dynamic_labels
 
 # Pinned defaults
 DEFAULT_CSV_PATH = str(Path(__file__).resolve().parent.parent / "data" / "landmarks.csv")

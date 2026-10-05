@@ -93,8 +93,16 @@ class StaticClassifierV2:
             try:
                 state_dict = torch.load(model_path, map_location=self.device)
                 self.model.load_state_dict(state_dict)
-                print(f"[INFO] Static Model v2 loaded successfully from: {model_path}")
+                
+                # Check for label mismatch
+                out_features = self.model.head.out_features
+                if out_features != len(self.class_labels):
+                    raise ValueError(f"Static Model output layer ({out_features}) does not match length of class_labels.txt ({len(self.class_labels)}). Please retrain.")
+                else:
+                    print(f"[INFO] Static Model v2 loaded successfully from: {model_path}")
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(f"[ERROR] Failed to load Model v2 weights from {model_path}: {e}")
         else:
             print(f"[WARNING] Model weights file not found at: {model_path}. Initialized with random weights.")
@@ -109,23 +117,19 @@ class StaticClassifierV2:
         if not flat_features or np.all(np.array(flat_features) == 0.0):
             return "", 0.0
 
-        try:
-            tensor_input = torch.tensor(flat_features, dtype=torch.float32).unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                logits = self.model(tensor_input)
-                probabilities = torch.softmax(logits, dim=1)
-                
-                max_prob, max_idx = torch.max(probabilities, dim=1)
-                
-                conf = float(max_prob.item())
-                predicted_idx = int(max_idx.item())
-                
-                if predicted_idx < len(self.class_labels):
-                    return self.class_labels[predicted_idx], conf
-                return "Unknown", conf
-        except Exception as e:
-            print(f"[ERROR] Static v2 inference failed: {e}")
-            return "Error", 0.0
+        tensor_input = torch.tensor(flat_features, dtype=torch.float32).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            logits = self.model(tensor_input)
+            probabilities = torch.softmax(logits, dim=1)
+            
+            max_prob, max_idx = torch.max(probabilities, dim=1)
+            
+            conf = float(max_prob.item())
+            predicted_idx = int(max_idx.item())
+            
+            if predicted_idx < len(self.class_labels):
+                return self.class_labels[predicted_idx], conf
+            return "Unknown", conf
 
     def predict(self, flat_features: list[float]) -> str:
         label, _ = self.predict_with_confidence(flat_features)

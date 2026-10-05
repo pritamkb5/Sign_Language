@@ -235,6 +235,23 @@ def prepare_input_vector(landmarks_list) -> list[float]:
 
     return features
 
+def prepare_raw_vector(landmarks_list) -> list[float]:
+    """
+    Extracts 126-dimensional raw landmarks (x, y, z) for 2 hands.
+    Preserves absolute position to allow computing directional velocity.
+    """
+    features = []
+    
+    for hand_idx in range(2):
+        if hand_idx < len(landmarks_list) and landmarks_list[hand_idx] is not None:
+            for lm in landmarks_list[hand_idx]:
+                features.extend([getattr(lm, 'x', 0.0), getattr(lm, 'y', 0.0), getattr(lm, 'z', 0.0)])
+        else:
+            features.extend([0.0] * 63)
+            
+    return features
+
+
 
 def augment_landmarks(flat_vector: list[float], rotation_deg: float = 15.0, jitter_std: float = 0.02) -> list[float]:
     """
