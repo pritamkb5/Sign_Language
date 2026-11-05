@@ -7,9 +7,13 @@ import threading
 import numpy as np
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QPushButton, QSlider, 
-                             QComboBox, QTextEdit, QCheckBox, QMessageBox)
+                             QComboBox, QTextEdit, QCheckBox, QMessageBox,
+                             QFrame, QSizePolicy, QStatusBar, QScrollArea)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt6.QtGui import QImage, QPixmap, QFont
+from PyQt6.QtGui import QImage, QPixmap, QFont, QPalette, QColor
+
+# Theme / Stylesheet import
+from src.styles import get_stylesheet
 
 # Pipeline imports
 from src.capture import open_camera, compute_fps
@@ -122,7 +126,9 @@ class TranslatorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Sign Language Translator - Alpha")
-        self.setGeometry(100, 100, 1000, 700)
+        self.resize(1180, 780)
+        self.setMinimumSize(980, 680)
+        self.setStyleSheet(get_stylesheet())
         
         # Pipeline State
         self.active_mode = "STATIC"
@@ -160,59 +166,187 @@ class TranslatorApp(QMainWindow):
         self.no_hand_frames = 0
         self.setup_ui()
         
+    def _set_camera_idle(self):
+        """Displays a clean modern idle card placeholder when camera feed is not running."""
+        self.video_label.setPixmap(QPixmap())
+        self.video_label.setText(
+            "<div style='text-align: center; padding: 40px;'>"
+            "<p style='font-size: 46px; margin: 0 0 14px 0; color: #475569;'>📷</p>"
+            "<p style='font-size: 16px; font-weight: 600; color: #E2E8F0; margin: 0 0 8px 0;'>Camera is off</p>"
+            "<p style='font-size: 13px; color: #64748B; margin: 0;'>Press <b style='color: #6C63FF;'>Start Camera</b> to begin recognition</p>"
+            "</div>"
+        )
+
     def setup_ui(self):
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        layout = QHBoxLayout(main_widget)
+        central_widget = QWidget()
+        central_widget.setObjectName("central_widget")
+        self.setCentralWidget(central_widget)
         
-        # Left Panel: Video & Basic Indicators
-        left_layout = QVBoxLayout()
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(16, 12, 16, 12)
+        root_layout.setSpacing(12)
         
-        self.video_label = QLabel("Camera Feed (Stopped)")
+        # --- Top Modern Header ---
+        header_frame = QFrame()
+        header_frame.setObjectName("header_bar")
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(4, 2, 4, 8)
+        header_layout.setSpacing(10)
+        
+        lbl_title = QLabel("Sign Language Translator")
+        lbl_title.setObjectName("app_title")
+        
+        lbl_badge = QLabel("ALPHA")
+        lbl_badge.setObjectName("app_badge")
+        
+        lbl_sub = QLabel("• Real-Time Gesture & Sign Recognition")
+        lbl_sub.setObjectName("app_subtitle")
+        
+        status_pill = QLabel("● Engine Ready")
+        status_pill.setObjectName("status_pill")
+        
+        header_layout.addWidget(lbl_title)
+        header_layout.addWidget(lbl_badge)
+        header_layout.addWidget(lbl_sub)
+        header_layout.addStretch()
+        header_layout.addWidget(status_pill)
+        root_layout.addWidget(header_frame)
+        
+        # --- Main Body Grid / Columns ---
+        body_layout = QHBoxLayout()
+        body_layout.setSpacing(14)
+        
+        # =========================================================
+        # Left Panel: Live Camera Feed & Prediction Badge
+        # =========================================================
+        card_camera = QFrame()
+        card_camera.setObjectName("card_camera")
+        cam_card_layout = QVBoxLayout(card_camera)
+        cam_card_layout.setContentsMargins(16, 16, 16, 16)
+        cam_card_layout.setSpacing(10)
+        
+        lbl_cam_section = QLabel("LIVE CAMERA PREVIEW")
+        lbl_cam_section.setProperty("section", True)
+        cam_card_layout.addWidget(lbl_cam_section)
+        
+        self.video_label = QLabel()
+        self.video_label.setObjectName("video_label")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setMinimumSize(640, 480)
-        self.video_label.setStyleSheet("background-color: black; color: white;")
-        left_layout.addWidget(self.video_label)
+        self.video_label.setMinimumSize(540, 400)
+        self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.video_label.setToolTip("Live webcam preview with real-time hand landmark tracking")
+        self._set_camera_idle()
+        cam_card_layout.addWidget(self.video_label, stretch=1)
         
-        # Live Prediction Indicator
+        lbl_pred_section = QLabel("CURRENT PREDICTION")
+        lbl_pred_section.setProperty("section", True)
+        cam_card_layout.addWidget(lbl_pred_section)
+        
         self.pred_label = QLabel("Prediction: --")
-        self.pred_label.setFont(QFont("Arial", 24, QFont.Weight.Bold))
+        self.pred_label.setObjectName("pred_badge")
         self.pred_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        left_layout.addWidget(self.pred_label)
+        self.pred_label.setToolTip("Current recognized sign and model confidence")
+        cam_card_layout.addWidget(self.pred_label)
         
         self.warning_label = QLabel("")
-        self.warning_label.setStyleSheet("color: orange;")
+        self.warning_label.setObjectName("warning_label")
         self.warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        left_layout.addWidget(self.warning_label)
+        cam_card_layout.addWidget(self.warning_label)
         
-        layout.addLayout(left_layout, stretch=2)
+        body_layout.addWidget(card_camera, stretch=3)
         
-        # Right Panel: Controls & Sentence Buffer
-        right_layout = QVBoxLayout()
+        # =========================================================
+        # Right Column: Scrollable Transcription & Settings Cards
+        # =========================================================
+        right_scroll = QScrollArea()
+        right_scroll.setObjectName("right_scroll_area")
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
         
-        # Sentence Area
-        right_layout.addWidget(QLabel("Raw Sign Input:"))
+        right_container = QWidget()
+        right_container.setObjectName("right_scroll_content")
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 8, 0)
+        right_layout.setSpacing(14)
+        
+        # --- Card 1: Input & Translation Card ---
+        card_trans = QFrame()
+        card_trans.setObjectName("card_transcription")
+        trans_layout = QVBoxLayout(card_trans)
+        trans_layout.setContentsMargins(18, 18, 18, 18)
+        trans_layout.setSpacing(10)
+        
+        lbl_trans_header = QLabel("TRANSCRIPTION & TRANSLATION")
+        lbl_trans_header.setProperty("section", True)
+        lbl_trans_header.setMinimumHeight(18)
+        trans_layout.addWidget(lbl_trans_header)
+        
+        lbl_raw = QLabel("RAW SIGN INPUT")
+        lbl_raw.setProperty("section", True)
+        lbl_raw.setMinimumHeight(16)
+        trans_layout.addWidget(lbl_raw)
+        
         self.sentence_text = QTextEdit()
+        self.sentence_text.setObjectName("sentence_text")
         self.sentence_text.setReadOnly(True)
-        self.sentence_text.setFont(QFont("Arial", 14))
-        self.sentence_text.setMaximumHeight(60)
-        right_layout.addWidget(self.sentence_text)
-
-        right_layout.addWidget(QLabel("Translation:"))
-        self.translation_text = QTextEdit()
-        self.translation_text.setReadOnly(True)
-        self.translation_text.setFont(QFont("Arial", 16, QFont.Weight.Bold))
-        self.translation_text.setStyleSheet("color: #2e8b57;")
-        self.translation_text.setMaximumHeight(80)
-        right_layout.addWidget(self.translation_text)
+        self.sentence_text.setFont(QFont("Segoe UI Variable", 13))
+        self.sentence_text.setMinimumHeight(60)
+        self.sentence_text.setMaximumHeight(70)
+        self.sentence_text.setPlaceholderText("Detected letters and signs will accumulate here...")
+        self.sentence_text.setToolTip("Stream of raw detected sign tokens")
+        pal_s = self.sentence_text.palette()
+        pal_s.setColor(QPalette.ColorRole.PlaceholderText, QColor("#94A3B8"))
+        self.sentence_text.setPalette(pal_s)
+        trans_layout.addWidget(self.sentence_text)
         
-        # Controls for Sentence
+        lbl_trans = QLabel("NATURAL LANGUAGE TRANSLATION")
+        lbl_trans.setProperty("section", True)
+        lbl_trans.setMinimumHeight(16)
+        trans_layout.addWidget(lbl_trans)
+        
+        self.translation_text = QTextEdit()
+        self.translation_text.setObjectName("translation_text")
+        self.translation_text.setReadOnly(True)
+        self.translation_text.setFont(QFont("Segoe UI Variable", 14, QFont.Weight.Bold))
+        self.translation_text.setMinimumHeight(70)
+        self.translation_text.setMaximumHeight(85)
+        self.translation_text.setPlaceholderText("Translated fluent English sentence will appear here...")
+        self.translation_text.setToolTip("Contextual AI translation")
+        pal_t = self.translation_text.palette()
+        pal_t.setColor(QPalette.ColorRole.PlaceholderText, QColor("#94A3B8"))
+        self.translation_text.setPalette(pal_t)
+        trans_layout.addWidget(self.translation_text)
+        
+        # Secondary Action Buttons Row
         btn_layout = QHBoxLayout()
-        self.btn_space = QPushButton("Space")
-        self.btn_delete = QPushButton("Delete")
-        self.btn_clear = QPushButton("Clear")
-        self.btn_translate = QPushButton("Translate")
-        self.btn_speak = QPushButton("Speak Sentence")
+        btn_layout.setSpacing(8)
+        
+        self.btn_space = QPushButton("␣ Space")
+        self.btn_space.setObjectName("btn_space")
+        self.btn_space.setMinimumHeight(36)
+        self.btn_space.setToolTip("Insert a space delimiter (Space key)")
+        
+        self.btn_delete = QPushButton("⌫ Delete")
+        self.btn_delete.setObjectName("btn_delete")
+        self.btn_delete.setMinimumHeight(36)
+        self.btn_delete.setToolTip("Delete the last token")
+        
+        self.btn_clear = QPushButton("✕ Clear")
+        self.btn_clear.setObjectName("btn_clear")
+        self.btn_clear.setMinimumHeight(36)
+        self.btn_clear.setToolTip("Clear all text and reset stabilizers")
+        
+        self.btn_translate = QPushButton("✦ Translate")
+        self.btn_translate.setObjectName("btn_translate")
+        self.btn_translate.setMinimumHeight(36)
+        self.btn_translate.setToolTip("Translate accumulated sign tokens into natural English")
+        
+        self.btn_speak = QPushButton("🔊 Speak")
+        self.btn_speak.setObjectName("btn_speak")
+        self.btn_speak.setMinimumHeight(36)
+        self.btn_speak.setToolTip("Read aloud the sentence via Text-to-Speech")
         
         self.btn_space.clicked.connect(self.on_space_clicked)
         self.btn_delete.clicked.connect(self.on_delete_clicked)
@@ -225,34 +359,71 @@ class TranslatorApp(QMainWindow):
         btn_layout.addWidget(self.btn_clear)
         btn_layout.addWidget(self.btn_translate)
         btn_layout.addWidget(self.btn_speak)
-        right_layout.addLayout(btn_layout)
+        trans_layout.addLayout(btn_layout)
         
-        # Settings Panel
-        right_layout.addWidget(QLabel("Settings:"))
+        right_layout.addWidget(card_trans)
         
-        # Mode Toggle Buttons
-        mode_layout = QHBoxLayout()
+        # --- Card 2: Settings & Controls Card ---
+        card_settings = QFrame()
+        card_settings.setObjectName("card_settings")
+        set_layout = QVBoxLayout(card_settings)
+        set_layout.setContentsMargins(18, 18, 18, 18)
+        set_layout.setSpacing(16)
+        
+        lbl_set_header = QLabel("SETTINGS & CONTROLS")
+        lbl_set_header.setProperty("section", True)
+        lbl_set_header.setMinimumHeight(18)
+        set_layout.addWidget(lbl_set_header)
+        
+        # Mode Segmented Control Section
+        mode_box = QVBoxLayout()
+        mode_box.setSpacing(6)
+        lbl_mode = QLabel("RECOGNITION MODE")
+        lbl_mode.setProperty("section", True)
+        lbl_mode.setMinimumHeight(16)
+        mode_box.addWidget(lbl_mode)
+        
+        seg_frame = QFrame()
+        seg_frame.setObjectName("segmented_control")
+        seg_frame.setFixedHeight(46)
+        seg_layout = QHBoxLayout(seg_frame)
+        seg_layout.setContentsMargins(3, 3, 3, 3)
+        seg_layout.setSpacing(3)
+        
         self.btn_static_mode = QPushButton("Static Mode")
         self.btn_dynamic_mode = QPushButton("Dynamic Mode")
+        self.btn_static_mode.setFixedHeight(40)
+        self.btn_dynamic_mode.setFixedHeight(40)
         self.btn_static_mode.setCheckable(True)
         self.btn_dynamic_mode.setCheckable(True)
+        self.btn_static_mode.setToolTip("Recognize static ASL alphabet fingerspelling (A-Z, 0-9)")
+        self.btn_dynamic_mode.setToolTip("Recognize dynamic continuous words and motion gestures")
         self.btn_static_mode.clicked.connect(lambda: self.set_mode("STATIC"))
         self.btn_dynamic_mode.clicked.connect(lambda: self.set_mode("DYNAMIC"))
-        mode_layout.addWidget(self.btn_static_mode)
-        mode_layout.addWidget(self.btn_dynamic_mode)
-        right_layout.addLayout(mode_layout)
-
+        seg_layout.addWidget(self.btn_static_mode)
+        seg_layout.addWidget(self.btn_dynamic_mode)
+        mode_box.addWidget(seg_frame)
+        
         # Dynamic Vocabulary List
         self.vocab_label = QLabel("Dynamic Vocab: " + ", ".join(self.dynamic_labels))
+        self.vocab_label.setObjectName("vocab_label")
         self.vocab_label.setWordWrap(True)
-        self.vocab_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
         self.vocab_label.setVisible(False)
-        right_layout.addWidget(self.vocab_label)
-
-        # Camera Selector
-        cam_sel_layout = QHBoxLayout()
-        cam_sel_layout.addWidget(QLabel("Camera Device:"))
+        self.vocab_label.setMinimumHeight(24)
+        mode_box.addWidget(self.vocab_label)
+        set_layout.addLayout(mode_box)
+        
+        # Camera Device Selector Section
+        cam_sel_layout = QVBoxLayout()
+        cam_sel_layout.setSpacing(6)
+        lbl_cam = QLabel("CAMERA DEVICE")
+        lbl_cam.setProperty("section", True)
+        lbl_cam.setMinimumHeight(16)
+        cam_sel_layout.addWidget(lbl_cam)
+        
         self.cam_combo = QComboBox()
+        self.cam_combo.setObjectName("cam_combo")
+        self.cam_combo.setFixedHeight(40)
         self.cam_combo.addItems([
             "Auto-Detect Active Camera",
             "Camera 1 (Logitech Brio 100)",
@@ -260,45 +431,117 @@ class TranslatorApp(QMainWindow):
             "Camera 2",
             "Synthetic Camera (Mock)"
         ])
+        self.cam_combo.setToolTip("Select camera video device")
         cam_sel_layout.addWidget(self.cam_combo)
-        right_layout.addLayout(cam_sel_layout)
+        set_layout.addLayout(cam_sel_layout)
+        
+        # Toggle Switches Section (with generous spacing above and below)
+        chk_layout = QVBoxLayout()
+        chk_layout.setSpacing(10)
+        chk_layout.setContentsMargins(0, 4, 0, 4)
+        
+        lbl_chk_header = QLabel("AUTOMATION & OVERLAYS")
+        lbl_chk_header.setProperty("section", True)
+        lbl_chk_header.setMinimumHeight(16)
+        chk_layout.addWidget(lbl_chk_header)
         
         self.auto_speak_check = QCheckBox("Auto-Speak Confirmed Words")
+        self.auto_speak_check.setObjectName("auto_speak_check")
+        self.auto_speak_check.setMinimumHeight(32)
+        self.auto_speak_check.setToolTip("Automatically speak confirmed signs as they are recognized")
         self.auto_speak_check.stateChanged.connect(self.on_auto_speak_changed)
-        right_layout.addWidget(self.auto_speak_check)
-
-        self.captions_check = QCheckBox("Show Live Captions On Video")
-        self.captions_check.setChecked(True)
-        self.captions_check.stateChanged.connect(self.on_captions_toggle_changed)
-        right_layout.addWidget(self.captions_check)
+        chk_layout.addWidget(self.auto_speak_check)
         
-        # Sliders
-        conf_layout = QHBoxLayout()
-        conf_layout.addWidget(QLabel("Confidence Threshold:"))
+        self.captions_check = QCheckBox("Show Live Captions On Video")
+        self.captions_check.setObjectName("captions_check")
+        self.captions_check.setChecked(True)
+        self.captions_check.setMinimumHeight(32)
+        self.captions_check.setToolTip("Render real-time subtitles directly on the camera frame")
+        self.captions_check.stateChanged.connect(self.on_captions_toggle_changed)
+        chk_layout.addWidget(self.captions_check)
+        set_layout.addLayout(chk_layout)
+        
+        # Detection Thresholds Sliders Section
+        sliders_box = QVBoxLayout()
+        sliders_box.setSpacing(12)
+        
+        lbl_sliders_header = QLabel("DETECTION THRESHOLDS")
+        lbl_sliders_header.setProperty("section", True)
+        lbl_sliders_header.setMinimumHeight(16)
+        sliders_box.addWidget(lbl_sliders_header)
+        
+        # Confidence Slider
+        conf_box = QVBoxLayout()
+        conf_box.setSpacing(4)
+        conf_head = QHBoxLayout()
+        lbl_conf = QLabel("Confidence Threshold")
+        lbl_conf.setStyleSheet("color: #94A3B8; font-size: 12px; font-weight: 500;")
+        lbl_conf.setMinimumHeight(18)
+        self.conf_val_label = QLabel("40%")
+        self.conf_val_label.setProperty("class", "slider_val")
+        self.conf_val_label.setMinimumHeight(18)
+        conf_head.addWidget(lbl_conf)
+        conf_head.addStretch()
+        conf_head.addWidget(self.conf_val_label)
+        conf_box.addLayout(conf_head)
+        
         self.conf_slider = QSlider(Qt.Orientation.Horizontal)
+        self.conf_slider.setObjectName("conf_slider")
         self.conf_slider.setRange(30, 95)
         self.conf_slider.setValue(40)
+        self.conf_slider.setMinimumHeight(24)
+        self.conf_slider.setToolTip("Minimum prediction confidence (30% - 95%)")
         self.conf_slider.valueChanged.connect(self.on_settings_changed)
-        conf_layout.addWidget(self.conf_slider)
-        right_layout.addLayout(conf_layout)
+        conf_box.addWidget(self.conf_slider)
+        sliders_box.addLayout(conf_box)
         
-        hold_layout = QHBoxLayout()
-        hold_layout.addWidget(QLabel("Hold Duration (Frames):"))
+        # Hold Duration Slider
+        hold_box = QVBoxLayout()
+        hold_box.setSpacing(4)
+        hold_head = QHBoxLayout()
+        lbl_hold = QLabel("Hold Duration (Frames)")
+        lbl_hold.setStyleSheet("color: #94A3B8; font-size: 12px; font-weight: 500;")
+        lbl_hold.setMinimumHeight(18)
+        self.hold_val_label = QLabel("15 frames")
+        self.hold_val_label.setProperty("class", "slider_val")
+        self.hold_val_label.setMinimumHeight(18)
+        hold_head.addWidget(lbl_hold)
+        hold_head.addStretch()
+        hold_head.addWidget(self.hold_val_label)
+        hold_box.addLayout(hold_head)
+        
         self.hold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.hold_slider.setObjectName("hold_slider")
         self.hold_slider.setRange(5, 45)
         self.hold_slider.setValue(15)
+        self.hold_slider.setMinimumHeight(24)
+        self.hold_slider.setToolTip("Consecutive stable frames required before accepting a sign (5 - 45)")
         self.hold_slider.valueChanged.connect(self.on_settings_changed)
-        hold_layout.addWidget(self.hold_slider)
-        right_layout.addLayout(hold_layout)
+        hold_box.addWidget(self.hold_slider)
+        sliders_box.addLayout(hold_box)
         
-        # Camera Control
-        cam_layout = QHBoxLayout()
-        self.btn_camera = QPushButton("Start Camera")
+        set_layout.addLayout(sliders_box)
+        
+        # Primary Action: Start/Stop Camera
+        self.btn_camera = QPushButton("▶  Start Camera")
+        self.btn_camera.setObjectName("btn_camera")
+        self.btn_camera.setFixedHeight(42)
+        self.btn_camera.setToolTip("Start or stop camera video capture and inference")
         self.btn_camera.clicked.connect(self.toggle_camera)
-        cam_layout.addWidget(self.btn_camera)
-        right_layout.addLayout(cam_layout)
+        set_layout.addWidget(self.btn_camera)
         
-        layout.addLayout(right_layout, stretch=1)
+        right_layout.addWidget(card_settings)
+        right_layout.addStretch()
+        
+        right_scroll.setWidget(right_container)
+        body_layout.addWidget(right_scroll, stretch=2)
+        
+        root_layout.addLayout(body_layout, stretch=1)
+        
+        # Status Bar
+        status = self.statusBar()
+        if status:
+            status.showMessage("Ready  |  Dual-Mode Recognition Engine Active")
         
         # Set default mode at the end of setup
         self.set_mode("STATIC")
@@ -320,6 +563,10 @@ class TranslatorApp(QMainWindow):
         self.static_stabilizer.static_k = hold
         self.static_stabilizer.static_conf = conf
         self.static_stabilizer.set_mode("STATIC")
+        if hasattr(self, 'conf_val_label'):
+            self.conf_val_label.setText(f"{self.conf_slider.value()}%")
+        if hasattr(self, 'hold_val_label'):
+            self.hold_val_label.setText(f"{hold} frames")
 
     def on_auto_speak_changed(self, state):
         self.speech_engine.auto_speak = (state == 2)
@@ -379,7 +626,12 @@ class TranslatorApp(QMainWindow):
         self._process_timer.start(30)  # ~33fps pull rate
 
         self.is_running = True
-        self.btn_camera.setText("Stop Camera")
+        self.btn_camera.setText("⏹  Stop Camera")
+        self.btn_camera.setProperty("running", True)
+        self.btn_camera.style().unpolish(self.btn_camera)
+        self.btn_camera.style().polish(self.btn_camera)
+        if self.statusBar():
+            self.statusBar().showMessage("Camera Running  |  Real-time inference active")
 
 
     def stop_camera(self):
@@ -389,9 +641,13 @@ class TranslatorApp(QMainWindow):
         if hasattr(self, 'video_thread'):
             self.video_thread.stop()
         self.is_running = False
-        self.btn_camera.setText("Start Camera")
-        self.video_label.setText("Camera Feed (Stopped)")
-        self.video_label.setStyleSheet("background-color: black; color: white;")
+        self.btn_camera.setText("▶  Start Camera")
+        self.btn_camera.setProperty("running", False)
+        self.btn_camera.style().unpolish(self.btn_camera)
+        self.btn_camera.style().polish(self.btn_camera)
+        self._set_camera_idle()
+        if self.statusBar():
+            self.statusBar().showMessage("Camera Stopped  |  System ready")
 
     def handle_camera_error(self, err_msg):
         self.stop_camera()
